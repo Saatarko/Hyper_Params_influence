@@ -176,3 +176,6 @@ cython_debug/
 /mlruns
 /data
 /outdata
+/notebooks/.ipynb_checkpoints
+/.ipynb_checkpoints
+/scripts/mlruns

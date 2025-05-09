@@ -1,0 +1,36 @@
+paths:
+  raw_data: data/raw
+  processed_data: data/processed
+  models_dir: outdata/models
+  vectors_dir: outdata/vectors
+  image_dir: outdata/images
+  logs_dir: data/logs
+  scripts: scripts
+
+recommender_nn:
+  batch_size: 256
+  num_epochs: 20
+  learning_rate: 0.001
+  patience: 5
+  hidden_dim: 128
+
+experiment_synthetic:
+  task: regression  # or 'classification'
+  dataset: synthetic  # or 'student_exam', 'student_factors'
+  n_samples: 1000
+  noise_std: 0.1
+  seed: 42
+  model:
+    hidden_size: 64
+    dropout: 0.3
+    batch_norm: true
+    weight_init: he  # or 'xavier', 'normal', 'zeros'
+  loss_fn: mse  # or 'mae', 'huber', 'cross_entropy', 'bce'
+  regularization:
+    type: l2  # or 'l1', 'none'
+    lambda: 0.01
+  training:
+    epochs: 100
+    batch_size: 32
+    lr: 0.01
+    seed: 42

@@ -1,0 +1,22 @@
+stages:
+
+  generate_sintetic_data_stage:
+    cmd: python scripts/data_processing.py --tasks data:generate_synthetic_data
+    deps:
+    - scripts/data_processing.py
+    outs:
+    - data/raw/synthetic_regression.csv
+
+  search_train_nn_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_optuna_search_synt
+    deps:
+      - scripts/data_processing.py
+    outs:
+      - outdata/models/optuna_best_result.json
+
+  optuna_search_synt_class_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_optuna_search_synt_class
+    deps:
+      - scripts/data_processing.py
+    outs:
+      - outdata/models/class_optuna_best_result.json

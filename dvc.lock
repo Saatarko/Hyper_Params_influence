@@ -1,0 +1,14 @@
+schema: '2.0'
+stages:
+  generate_sintetic_data_stage:
+    cmd: python scripts/data_processing.py --tasks data:generate_synthetic_data
+    deps:
+    - path: scripts/data_processing.py
+      hash: md5
+      md5: 07d7b98ef07dbfe3330761c49d27d1f7
+      size: 1784
+    outs:
+    - path: data/raw/synthetic_regression.csv
+      hash: md5
+      md5: 75c18aa11bee1385028f800be3721f2b
+      size: 218244

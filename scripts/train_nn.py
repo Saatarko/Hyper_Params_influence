@@ -8,13 +8,19 @@ import mlflow
 import numpy as np
 import torch
 import yaml
+from matplotlib import pyplot as plt
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from torch import optim, nn
 from torch.utils.data import DataLoader, random_split, Dataset
-from auxiliary_functions import get_project_paths, plot_losses
+from auxiliary_functions import get_project_paths, plot_losses, log_confusion_matrix
 from task_registry import task, main
 import torch.nn.functional as F
+from torchvision import transforms
+from torchvision.datasets import ImageFolder
+
+
+
 mlflow.set_tracking_uri('http://localhost:5000')
 
 class NNDataset(Dataset):
@@ -162,8 +168,8 @@ def nn_train(X, y, model, criterion, optimizer, model_name_tag, num_epochs=100, 
             epoch_train_losses.append(avg_train)
             epoch_val_losses.append(avg_val)
 
-            mlflow.log_metric("{train_loss", avg_train, step=epoch)
-            mlflow.log_metric("{val_loss", avg_val, step=epoch)
+            mlflow.log_metric("train_loss", avg_train, step=epoch)
+            mlflow.log_metric("val_loss", avg_val, step=epoch)
 
             if avg_val < best_val_loss:
                 best_val_loss = avg_val
@@ -305,6 +311,374 @@ def nn_train_class(X, y, model, criterion, optimizer, model_name_tag, num_epochs
             json.dump(train_metrics, f, indent=4)
 
     return best_model_state, X_val_tensor, y_val_tensor
+
+
+
+class SimpleMLP(nn.Module):
+    def __init__(self, input_size=64*64*3, hidden_size=128, dropout=0.3):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(input_size, hidden_size),
+            Mish(),
+            nn.BatchNorm1d(hidden_size),  # Batch normalization
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, 1)  # Без Sigmoid
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+def train_image_model(
+    model,
+    full_dataset,
+    criterion,
+    optimizer,
+    device,
+    num_epochs=200,
+    batch_size=32,
+    val_split=0.2,
+    model_name_tag="image_model",
+    early_stopping_patience=30,
+):
+    mlflow.log_param("model_name_tag", model_name_tag)
+    mlflow.log_param("num_epochs", num_epochs)
+    mlflow.log_param("val_split", val_split)
+    mlflow.log_param("early_stopping_patience", early_stopping_patience)
+
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    with open(PROJECT_ROOT / "params.yaml") as f:
+        paths = get_project_paths()
+
+    model_path = paths["models_dir"] / f"{model_name_tag}_final_model.pt"
+
+    val_size = int(len(full_dataset) * val_split)
+    train_size = len(full_dataset) - val_size
+    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+    train_losses = []
+    val_losses = []
+
+    best_val_loss = float('inf')
+    patience_counter = 0
+    best_model_state = None
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3, factor=0.5)
+
+    for epoch in range(num_epochs):
+        model.train()
+        running_train_loss = 0.0
+        for inputs, labels in train_loader:
+            inputs, labels = inputs.to(device), labels.unsqueeze(1).float().to(device)
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            running_train_loss += loss.item()
+
+        avg_train_loss = running_train_loss / len(train_loader)
+        train_losses.append(avg_train_loss)
+        mlflow.log_metric("train_loss", avg_train_loss, step=epoch)
+
+        # Validation
+        model.eval()
+        running_val_loss = 0.0
+        with torch.no_grad():
+            for inputs, labels in val_loader:
+                inputs, labels = inputs.to(device), labels.unsqueeze(1).float().to(device)
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                running_val_loss += loss.item()
+
+
+        avg_val_loss = running_val_loss / len(val_loader)
+        val_losses.append(avg_val_loss)
+        mlflow.log_metric("val_loss", avg_val_loss, step=epoch)
+        scheduler.step(avg_val_loss)
+
+        print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+
+        # Early stopping
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            patience_counter = 0
+            best_model_state = model.state_dict()
+        else:
+            patience_counter += 1
+            if patience_counter >= early_stopping_patience:
+                print(f"Early stopping triggered at epoch {epoch+1}")
+                break
+
+    # Save the best model
+    if model_path and best_model_state:
+        torch.save(best_model_state, model_path)
+        mlflow.log_artifact(str(model_path))
+
+    return train_losses, val_losses
+
+def predict_image(model, test_loader, device):
+    model.eval()
+    all_preds, all_labels = [], []
+    with torch.no_grad():
+        for inputs, labels in test_loader:
+            inputs = inputs.to(device)
+            outputs = model(inputs)
+            preds = (outputs > 0.5).int().cpu().numpy()  # Преобразование выхода модели в метки (0 или 1)
+            all_preds.extend(preds)
+            all_labels.extend(labels.numpy())
+
+    return np.array(all_preds), np.array(all_labels)
+
+def get_data_loaders(data_dir, batch_size=32, augment=False):
+    normalization = transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],  # стандартные значения для ImageNet
+        std=[0.229, 0.224, 0.225]
+    )
+
+    if augment:
+        transform = transforms.Compose([
+            transforms.RandomResizedCrop(64, scale=(0.8, 1.0)),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomRotation(7),
+            # transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+            transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.9, 1.1)),
+            transforms.ToTensor(),
+            normalization,
+            transforms.RandomErasing(p=0.3, scale=(0.02, 0.1), ratio=(0.3, 3.3), value=0)
+        ])
+    else:
+        transform = transforms.Compose([
+            transforms.Resize((64, 64)),
+            transforms.ToTensor(),
+            normalization
+        ])
+
+    test_transform = transforms.Compose([
+        transforms.Resize((64, 64)),
+        transforms.ToTensor(),
+        normalization
+    ])
+
+    train_ds = ImageFolder(os.path.join(data_dir, 'train'), transform=transform)
+    test_ds = ImageFolder(os.path.join(data_dir, 'test'), transform=test_transform)
+
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
+
+    return train_loader, test_loader, train_ds.classes
+
+
+
+
+class SimpleCNN(nn.Module):
+    def __init__(self, dropout=0.3):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+
+            nn.Flatten(),
+            nn.Linear(64 * 16 * 16, 128),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, 1)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+
+
+def ewc_loss(model, fisher, prev_params, lambda_ewc=1000):
+    loss = 0.0
+    for name, param in model.named_parameters():
+        if name in fisher:
+            loss += (fisher[name] * (param - prev_params[name]).pow(2)).sum()
+    return loss * lambda_ewc
+
+
+def train_image_model_ewc(
+    model,
+    full_dataset,
+    criterion,
+    optimizer,
+    device,
+    fisher=None,
+    prev_params=None,
+    lambda_ewc=1000,
+    num_epochs=200,
+    batch_size=32,
+    val_split=0.2,
+    model_name_tag="image_model",
+    early_stopping_patience=30,
+):
+    mlflow.log_param("model_name_tag", model_name_tag)
+    mlflow.log_param("num_epochs", num_epochs)
+    mlflow.log_param("val_split", val_split)
+    mlflow.log_param("early_stopping_patience", early_stopping_patience)
+
+    paths = get_project_paths()
+    model_path = paths["models_dir"] / f"{model_name_tag}_final_model.pt"
+
+    val_size = int(len(full_dataset) * val_split)
+    train_size = len(full_dataset) - val_size
+    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+    train_losses, val_losses = [], []
+    best_val_loss = float('inf')
+    patience_counter = 0
+    best_model_state = None
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3, factor=0.5)
+
+    for epoch in range(num_epochs):
+        model.train()
+        running_train_loss = 0.0
+        for inputs, labels in train_loader:
+            inputs, labels = inputs.to(device), labels.unsqueeze(1).float().to(device)
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            if fisher and prev_params:
+                loss += ewc_loss(model, fisher, prev_params, lambda_ewc)
+            loss.backward()
+            optimizer.step()
+            running_train_loss += loss.item()
+
+        avg_train_loss = running_train_loss / len(train_loader)
+        train_losses.append(avg_train_loss)
+        mlflow.log_metric("train_loss", avg_train_loss, step=epoch)
+
+        model.eval()
+        running_val_loss = 0.0
+        with torch.no_grad():
+            for inputs, labels in val_loader:
+                inputs, labels = inputs.to(device), labels.unsqueeze(1).float().to(device)
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                running_val_loss += loss.item()
+
+        avg_val_loss = running_val_loss / len(val_loader)
+        val_losses.append(avg_val_loss)
+        mlflow.log_metric("val_loss", avg_val_loss, step=epoch)
+        scheduler.step(avg_val_loss)
+
+        print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            patience_counter = 0
+            best_model_state = model.state_dict()
+        else:
+            patience_counter += 1
+            if patience_counter >= early_stopping_patience:
+                print(f"Early stopping triggered at epoch {epoch+1}")
+                break
+
+    if model_path and best_model_state:
+        torch.save(best_model_state, model_path)
+        mlflow.log_artifact(str(model_path))
+
+    return train_losses, val_losses
+
+
+def define_augmentations(trial):
+    rotation = trial.suggest_int("rotation", 0, 10)
+    translate = trial.suggest_float("translate", 0.0, 0.2)
+    scale_min = trial.suggest_float("scale_min", 0.8, 1.0)
+    scale_max = trial.suggest_float("scale_max", 1.0, 1.2)
+    use_color_jitter = trial.suggest_categorical("color_jitter", [True, False])
+    erasing_p = trial.suggest_float("random_erasing_p", 0.0, 0.4)
+
+    transform_list = [
+        transforms.RandomResizedCrop(64, scale=(scale_min, scale_max)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(rotation),
+        transforms.RandomAffine(degrees=0, translate=(translate, translate), scale=(scale_min, scale_max)),
+    ]
+
+    if use_color_jitter:
+        transform_list.append(transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2))
+
+    transform_list.extend([
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+
+    if erasing_p > 0.0:
+        transform_list.append(transforms.RandomErasing(p=erasing_p, scale=(0.02, 0.1), ratio=(0.3, 3.3), value=0))
+
+    return transforms.Compose(transform_list)
+
+
+def objective_cnn(trial):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    paths = get_project_paths()
+    data_dir = paths["raw_dir"] / "horsehuman"
+    batch_size = 32
+    num_epochs = 30
+
+    with mlflow.start_run(nested=True):
+        tag = f"optuna_aug_trial_{trial.number}"
+        aug_transform = define_augmentations(trial)
+
+        train_loader, test_loader, _ = get_data_loaders(data_dir, batch_size=batch_size, augment=False)
+        train_loader.dataset.transform = aug_transform  # вручную заменяем transform
+
+        model = SimpleCNN().to(device)
+        criterion = nn.BCEWithLogitsLoss()
+        optimizer = optim.AdamW(model.parameters(), lr=1e-3)
+
+        train_losses, val_losses = train_image_model(
+            model,
+            train_loader.dataset,
+            criterion,
+            optimizer,
+            device,
+            num_epochs=num_epochs,
+            model_name_tag=tag
+        )
+
+        all_preds, all_labels = predict_image(model, test_loader, device)
+        acc = (all_preds.flatten() == all_labels).mean()
+        mlflow.log_metric("accuracy", acc)
+
+        log_confusion_matrix(all_preds, all_labels, f"optuna_confmat_{trial.number}")
+        plot_losses(train_losses, val_losses, f"optuna_loss_{trial.number}")
+
+        return acc  # целевая метрика
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 if __name__ == "__main__":

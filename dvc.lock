@@ -12,3 +12,175 @@ stages:
       hash: md5
       md5: 75c18aa11bee1385028f800be3721f2b
       size: 218244
+  optuna_search_synt_class_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_optuna_search_synt_class
+    deps:
+    - path: scripts/data_processing.py
+      hash: md5
+      md5: 9f454ea0a76755c3c8b3610f2ce5f64e
+      size: 13005
+    outs:
+    - path: outdata/models/class_optuna_best_result.json
+      hash: md5
+      md5: a2514ae9a4a25001314d5d598a8017c7
+      size: 275
+  search_train_nn_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_optuna_search_synt
+    deps:
+    - path: scripts/data_processing.py
+      hash: md5
+      md5: 9f454ea0a76755c3c8b3610f2ce5f64e
+      size: 13005
+    - path: scripts/train_nn.py
+      hash: md5
+      md5: 1295dec394bceb883639f5e15dda1c76
+      size: 11799
+    outs:
+    - path: outdata/models/optuna_best_result.json
+      hash: md5
+      md5: c47389a4b6d869066839cb499ef58e98
+      size: 275
+  run_image_class_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_image_class
+    deps:
+    - path: scripts/data_processing.py
+      hash: md5
+      md5: 225898ad3ca7d121185dc43a41636ff9
+      size: 16940
+    - path: scripts/train_nn.py
+      hash: md5
+      md5: 9dd57e772c019aaf4dc2047792a36e2d
+      size: 17242
+    outs:
+    - path: outdata/models/animal_mlp_noaug.pt
+      hash: md5
+      md5: 702fc48d492601b48b2714342904b79c
+      size: 6298640
+    - path: outdata/vectors/animal_labels_noaug.npy
+      hash: md5
+      md5: 946f706f1b837c4cd99bdec84f084aa3
+      size: 16128
+    - path: outdata/vectors/animal_preds_noaug.npy
+      hash: md5
+      md5: 37d7563b452eb3b8399b985038f68e39
+      size: 8128
+  run_image_class_with_aug_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_image_class_with_aug
+    deps:
+    - path: scripts/data_processing.py
+      hash: md5
+      md5: 225898ad3ca7d121185dc43a41636ff9
+      size: 16940
+    - path: scripts/train_nn.py
+      hash: md5
+      md5: 9dd57e772c019aaf4dc2047792a36e2d
+      size: 17242
+    outs:
+    - path: outdata/models/animal_mlp_aug.pt
+      hash: md5
+      md5: 5e8c706e11f66ce2ba2ea545179fe652
+      size: 6298610
+    - path: outdata/vectors/animal_labels_aug.npy
+      hash: md5
+      md5: 946f706f1b837c4cd99bdec84f084aa3
+      size: 16128
+    - path: outdata/vectors/animal_preds_aug.npy
+      hash: md5
+      md5: 3284d4bc7a2b8d00a3c27cbcd9388a62
+      size: 8128
+  train_cnn_dag_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_image_cnn
+    deps:
+    - path: scripts/data_processing.py
+      hash: md5
+      md5: 2d0574e597551c582a73a1678d11d6cd
+      size: 18664
+    - path: scripts/train_nn.py
+      hash: md5
+      md5: bc566ae0a59e9dae9cf5863b2cf9061e
+      size: 18083
+    outs:
+    - path: outdata/models/animal_cnn_noaug.pt
+      hash: md5
+      md5: 1a01e3a31d592343846e70609efa3642
+      size: 8471115
+    - path: outdata/vectors/animal_labels_cnn_noaug.npy
+      hash: md5
+      md5: 946f706f1b837c4cd99bdec84f084aa3
+      size: 16128
+    - path: outdata/vectors/animal_preds_cnn_noaug.npy
+      hash: md5
+      md5: f30390e5f68739c0f6e1b2565792bfdc
+      size: 8128
+  run_image_cnn_aug_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_image_cnn_aug
+    deps:
+    - path: scripts/data_processing.py
+      hash: md5
+      md5: a3b183d9f1dcc6e1b300a29be057ca00
+      size: 20388
+    - path: scripts/train_nn.py
+      hash: md5
+      md5: 12bc1e2ce5ef6a7f9bf03c3935e81efd
+      size: 18084
+    outs:
+    - path: outdata/models/animal_cnn_aug.pt
+      hash: md5
+      md5: ee800d95afe428f3ca983a59301ee247
+      size: 8471087
+    - path: outdata/vectors/animal_labels_cnn_aug.npy
+      hash: md5
+      md5: 946f706f1b837c4cd99bdec84f084aa3
+      size: 16128
+    - path: outdata/vectors/animal_preds_cnn_aug.npy
+      hash: md5
+      md5: 744ce29f240d988f3053370012500d5d
+      size: 8128
+  run_transfer_learning_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_transfer_learning
+    deps:
+    - path: scripts/data_processing.py
+      hash: md5
+      md5: 12874bd36d908c52128741d9ad6d6c36
+      size: 22936
+    - path: scripts/train_nn.py
+      hash: md5
+      md5: 12bc1e2ce5ef6a7f9bf03c3935e81efd
+      size: 18084
+    outs:
+    - path: outdata/models/animal_cnn_transfer.pt
+      hash: md5
+      md5: ad165dd9abc0043fcb1409543cf657b5
+      size: 8471157
+  run_transfer_learning_brear_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_transfer_learning_brear
+    deps:
+    - path: scripts/data_processing.py
+      hash: md5
+      md5: 0c8b7b3fd9cf6cffd3776eb078331257
+      size: 26628
+    - path: scripts/train_nn.py
+      hash: md5
+      md5: 89babdef8cec02ae1d6416a2100a4cf2
+      size: 21462
+    outs:
+    - path: outdata/models/animal_cnn_transfer_pandasBears.pt
+      hash: md5
+      md5: abf63dbcf1713eb67e210af141aff15a
+      size: 8471453
+  run_transfer_learning_horse_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_transfer_learning_horse
+    deps:
+    - path: scripts/data_processing.py
+      hash: md5
+      md5: 59d8e81b08021e78aa3f6b0db71908e9
+      size: 29193
+    - path: scripts/train_nn.py
+      hash: md5
+      md5: 89babdef8cec02ae1d6416a2100a4cf2
+      size: 21462
+    outs:
+    - path: outdata/models/animal_cnn_transfer_horsehuman.pt
+      hash: md5
+      md5: 3a11b9aa8189fe92e8745617711589c9
+      size: 8471439

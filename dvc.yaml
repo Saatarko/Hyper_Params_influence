@@ -10,6 +10,7 @@ stages:
   search_train_nn_stage:
     cmd: python scripts/data_processing.py --tasks data:run_optuna_search_synt
     deps:
+      - scripts/train_nn.py
       - scripts/data_processing.py
     outs:
       - outdata/models/optuna_best_result.json
@@ -20,3 +21,76 @@ stages:
       - scripts/data_processing.py
     outs:
       - outdata/models/class_optuna_best_result.json
+
+  run_image_class_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_image_class
+    deps:
+      - scripts/train_nn.py
+      - scripts/data_processing.py
+    outs:
+      - outdata/models/animal_mlp_noaug.pt
+      - outdata/vectors/animal_preds_noaug.npy
+      - outdata/vectors/animal_labels_noaug.npy
+
+  run_image_class_with_aug_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_image_class_with_aug
+    deps:
+      - scripts/train_nn.py
+      - scripts/data_processing.py
+    outs:
+      - outdata/models/animal_mlp_aug.pt
+      - outdata/vectors/animal_preds_aug.npy
+      - outdata/vectors/animal_labels_aug.npy
+
+  train_cnn_dag_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_image_cnn
+    deps:
+      - scripts/train_nn.py
+      - scripts/data_processing.py
+    outs:
+      - outdata/models/animal_cnn_noaug.pt
+      - outdata/vectors/animal_preds_cnn_noaug.npy
+      - outdata/vectors/animal_labels_cnn_noaug.npy
+
+  run_image_cnn_aug_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_image_cnn_aug
+    deps:
+      - scripts/train_nn.py
+      - scripts/data_processing.py
+    outs:
+      - outdata/models/animal_cnn_aug.pt
+      - outdata/vectors/animal_preds_cnn_aug.npy
+      - outdata/vectors/animal_labels_cnn_aug.npy
+
+  run_transfer_learning_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_transfer_learning
+    deps:
+      - scripts/train_nn.py
+      - scripts/data_processing.py
+    outs:
+      - outdata/models/animal_cnn_transfer.pt
+
+  run_transfer_learning_brear_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_transfer_learning_brear
+    deps:
+      - scripts/train_nn.py
+      - scripts/data_processing.py
+    outs:
+      - outdata/models/animal_cnn_transfer_pandasBears.pt
+
+  run_transfer_learning_horse_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_transfer_learning_horse
+    deps:
+      - scripts/train_nn.py
+      - scripts/data_processing.py
+    outs:
+      - outdata/models/animal_cnn_transfer_horsehuman.pt
+
+
+  run_optuna_study_aug_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_optuna_study_aug
+    deps:
+      - scripts/train_nn.py
+      - scripts/data_processing.py
+    outs:
+      - outdata/models/best_augmented_model.pt

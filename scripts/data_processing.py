@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import os
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -17,8 +18,9 @@ import pandas as pd
 import yaml
 from torch import nn, optim
 
-from auxiliary_functions import get_project_paths, plot_losses
-from train_nn import SimpleNN, nn_train, nn_train_class
+from auxiliary_functions import get_project_paths, plot_losses, log_confusion_matrix
+from train_nn import SimpleNN, nn_train, nn_train_class, train_image_model, predict_image, SimpleMLP, get_data_loaders, \
+    SimpleCNN, objective_cnn
 from task_registry import task, main
 mlflow.set_tracking_uri('http://localhost:5000')
 
@@ -340,6 +342,447 @@ def run_optuna_search_synt_class():
         mlflow.log_artifact(optuna_path)
 
     return study
+
+
+
+
+@task("data:run_image_class")
+def run_image_class():
+
+    augment: bool = False
+    paths = get_project_paths()
+    data_dir = paths["raw_dir"] / "animals"
+
+    tag = "aug" if augment else "noaug"
+    model_path = paths["models_dir"] / f"animal_mlp_{tag}.pt"
+    preds_path = paths["vectors_dir"] / f"animal_preds_{tag}.npy"
+    labels_path = paths["vectors_dir"] / f"animal_labels_{tag}.npy"
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    batch_size = 32
+    model = SimpleMLP().to(device)
+    criterion = nn.BCEWithLogitsLoss()  # Вместо BCELoss
+    optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)  # AdamW с weight decay
+
+    with mlflow.start_run(run_name=f"SimpleMLP_{tag}"):
+        train_loader, test_loader, classes = get_data_loaders(data_dir, batch_size=batch_size, augment=augment)
+        train_ds = train_loader.dataset
+        mlflow.log_param("model_type", "SimpleMLP")
+        mlflow.log_param("input_size", 64 * 64 * 3)
+        mlflow.log_param("batch_size", batch_size)
+        mlflow.log_param("augment", augment)
+
+        train_losses, val_losses = train_image_model(model, train_ds, criterion, optimizer, device, model_name_tag ='image_model_noaug')
+
+        all_preds, all_labels = predict_image(model, test_loader, device)
+
+        log_confusion_matrix(all_preds, all_labels, f"simple_image_model_{tag}")
+
+        # Сохраняем модель и предсказания
+        torch.save(model.state_dict(), model_path)
+        np.save(preds_path, all_preds)
+        np.save(labels_path, all_labels)
+
+        acc = (all_preds.flatten() == all_labels).mean()
+        mlflow.log_metric("accuracy", acc)
+
+        # Логирование графика потерь
+        if augment:
+            plot_losses(train_losses, val_losses, 'with_aug')
+        else:
+            plot_losses(train_losses, val_losses, 'without_aug')
+
+
+@task("data:run_image_class_with_aug")
+def run_image_class_with_aug():
+    augment: bool = True
+    paths = get_project_paths()
+    data_dir = paths["raw_dir"] / "animals"
+
+    tag = "aug" if augment else "noaug"
+    model_path = paths["models_dir"] / f"animal_mlp_{tag}.pt"
+    preds_path = paths["vectors_dir"] / f"animal_preds_{tag}.npy"
+    labels_path = paths["vectors_dir"] / f"animal_labels_{tag}.npy"
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    batch_size = 32
+    model = SimpleMLP().to(device)
+    criterion = nn.BCEWithLogitsLoss()  # Вместо BCELoss
+    optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)  # AdamW с weight decay
+
+    with mlflow.start_run(run_name=f"SimpleMLP_{tag}"):
+        train_loader, test_loader, classes = get_data_loaders(data_dir, batch_size=batch_size, augment=augment)
+        train_ds = train_loader.dataset
+        mlflow.log_param("model_type", "SimpleMLP")
+        mlflow.log_param("input_size", 64 * 64 * 3)
+        mlflow.log_param("batch_size", batch_size)
+        mlflow.log_param("augment", augment)
+
+        train_losses, val_losses = train_image_model(model, train_ds, criterion, optimizer, device,model_name_tag ='image_model_aug')
+
+        all_preds, all_labels = predict_image(model, test_loader, device)
+
+        log_confusion_matrix(all_preds, all_labels, f"simple_image_model_{tag}")
+
+        # Сохраняем модель и предсказания
+        torch.save(model.state_dict(), model_path)
+        np.save(preds_path, all_preds)
+        np.save(labels_path, all_labels)
+
+        acc = (all_preds.flatten() == all_labels).mean()
+        mlflow.log_metric("accuracy", acc)
+
+        # Логирование графика потерь
+        if augment:
+            plot_losses(train_losses, val_losses, 'with_aug')
+        else:
+            plot_losses(train_losses, val_losses, 'without_aug')
+
+
+@task("data:run_image_cnn")
+def run_image_cnn():
+    augment = False
+    paths = get_project_paths()
+    data_dir = paths["raw_dir"] / "animals"
+
+    tag = "aug" if augment else "noaug"
+    model_path = paths["models_dir"] / f"animal_cnn_{tag}.pt"
+    preds_path = paths["vectors_dir"] / f"animal_preds_cnn_{tag}.npy"
+    labels_path = paths["vectors_dir"] / f"animal_labels_cnn_{tag}.npy"
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    batch_size = 32
+    model = SimpleCNN().to(device)
+    criterion = nn.BCEWithLogitsLoss()
+    optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
+
+    with mlflow.start_run(run_name=f"SimpleCNN_{tag}"):
+        train_loader, test_loader, classes = get_data_loaders(data_dir, batch_size=batch_size, augment=augment)
+        train_ds = train_loader.dataset
+
+        mlflow.log_param("model_type", "SimpleCNN")
+        mlflow.log_param("batch_size", batch_size)
+        mlflow.log_param("augment", augment)
+
+        train_losses, val_losses = train_image_model(
+            model, train_ds, criterion, optimizer, device,
+            model_name_tag=f"cnn_{tag}")
+
+        all_preds, all_labels = predict_image(model, test_loader, device)
+        log_confusion_matrix(all_preds, all_labels, f"simple_cnn_model_{tag}")
+
+        torch.save(model.state_dict(), model_path)
+        np.save(preds_path, all_preds)
+        np.save(labels_path, all_labels)
+
+        acc = (all_preds.flatten() == all_labels).mean()
+        mlflow.log_metric("accuracy", acc)
+
+        if augment:
+            plot_losses(train_losses, val_losses, 'cnn_with_aug')
+        else:
+            plot_losses(train_losses, val_losses, 'cnn_without_aug')
+
+
+
+
+
+
+
+@task("data:run_image_cnn_aug")
+def run_image_cnn_aug():
+    augment = True
+    paths = get_project_paths()
+    data_dir = paths["raw_dir"] / "animals"
+
+    tag = "aug" if augment else "noaug"
+    model_path = paths["models_dir"] / f"animal_cnn_{tag}.pt"
+    preds_path = paths["vectors_dir"] / f"animal_preds_cnn_{tag}.npy"
+    labels_path = paths["vectors_dir"] / f"animal_labels_cnn_{tag}.npy"
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    batch_size = 32
+    model = SimpleCNN().to(device)
+    criterion = nn.BCEWithLogitsLoss()
+    optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
+
+    with mlflow.start_run(run_name=f"SimpleCNN_{tag}"):
+        train_loader, test_loader, classes = get_data_loaders(data_dir, batch_size=batch_size, augment=augment)
+        train_ds = train_loader.dataset
+
+        mlflow.log_param("model_type", "SimpleCNN")
+        mlflow.log_param("batch_size", batch_size)
+        mlflow.log_param("augment", augment)
+
+        train_losses, val_losses = train_image_model(
+            model, train_ds, criterion, optimizer, device,
+            model_name_tag=f"cnn_{tag}")
+
+        all_preds, all_labels = predict_image(model, test_loader, device)
+        log_confusion_matrix(all_preds, all_labels, f"simple_cnn_model_{tag}")
+
+        torch.save(model.state_dict(), model_path)
+        np.save(preds_path, all_preds)
+        np.save(labels_path, all_labels)
+
+        acc = (all_preds.flatten() == all_labels).mean()
+        mlflow.log_metric("accuracy", acc)
+
+        if augment:
+            plot_losses(train_losses, val_losses, 'cnn_with_aug')
+        else:
+            plot_losses(train_losses, val_losses, 'cnn_without_aug')
+
+
+@task('data:run_transfer_learning')
+def run_transfer_learning():
+    paths = get_project_paths()
+    pretrained_model_path = paths["models_dir"] / "animal_cnn_aug.pt"
+    new_data_dir = paths["raw_dir"] / "animals(small)"
+    tag = "transfer_ver1"
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    batch_size = 32
+
+    # Загружаем базовую модель
+    base_model = SimpleCNN()
+    base_model.load_state_dict(torch.load(pretrained_model_path, map_location=device))
+
+    # Замораживаем все параметры
+    for param in base_model.parameters():
+        param.requires_grad = False
+
+    # Заменяем классификатор (последний слой)
+    in_features = base_model.net[-4].out_features
+    base_model.net[-1] = nn.Linear(in_features, 1)  # Новый классификатор
+    for param in base_model.net[-1].parameters():
+        param.requires_grad = True  # Только он обучаемый
+
+    base_model = base_model.to(device)
+
+    criterion = nn.BCEWithLogitsLoss()
+    optimizer = optim.AdamW(base_model.net[-1].parameters(), lr=1e-3, weight_decay=1e-4)
+
+    with mlflow.start_run(run_name=f"TransferLearning_{tag}"):
+        train_loader, test_loader, classes = get_data_loaders(new_data_dir, batch_size=batch_size, augment=True)
+
+        mlflow.log_param("transfer_from", str(pretrained_model_path))
+        mlflow.log_param("new_dataset", str(new_data_dir))
+        mlflow.log_param("freeze_base", True)
+        mlflow.log_param("batch_size", batch_size)
+
+        train_losses, val_losses = train_image_model(
+            base_model,
+            train_loader.dataset,
+            criterion,
+            optimizer,
+            device,
+            model_name_tag=f"transfer_{tag}",
+        )
+
+        model_path = paths["models_dir"] / f"animal_cnn_transfer.pt"
+        torch.save(base_model.state_dict(), model_path)
+        mlflow.log_artifact(str(model_path))
+
+        all_preds, all_labels = predict_image(base_model, test_loader, device)
+        log_confusion_matrix(all_preds, all_labels, f"transfer_model_{tag}")
+
+        acc = (all_preds.flatten() == all_labels).mean()
+        mlflow.log_metric("accuracy", acc)
+
+        plot_losses(train_losses, val_losses, f"transfer_{tag}")
+
+        preds_path = paths["vectors_dir"] / f"animal_preds_cnn_transfer_{tag}.npy"
+        labels_path = paths["vectors_dir"] / f"animal_labels_cnn_transfer_{tag}.npy"
+        np.save(preds_path, all_preds)
+        np.save(labels_path, all_labels)
+
+
+
+def compute_fisher(model, dataloader, criterion, device):
+    model.eval()
+    fisher = defaultdict(float)
+    for inputs, labels in dataloader:
+        inputs, labels = inputs.to(device), labels.unsqueeze(1).float().to(device)
+        model.zero_grad()
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+        loss.backward()
+
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                fisher[name] += (param.grad.detach() ** 2)
+
+    for name in fisher:
+        fisher[name] /= len(dataloader)
+
+    prev_params = {name: param.clone().detach() for name, param in model.named_parameters() if param.requires_grad}
+
+    # Save Fisher and previous parameters
+    paths = get_project_paths()
+    fisher_path = paths["processed_data"] / "fisher.pkl"
+    prev_params_path = paths["processed_data"] / "prev_params.pkl"
+    with open(fisher_path, 'wb') as f:
+        dill.dump(dict(fisher), f)
+    with open(prev_params_path, 'wb') as f:
+        dill.dump(prev_params, f)
+
+    return dict(fisher), prev_params
+
+
+
+
+@task('data:run_transfer_learning_brear')
+def run_transfer_learning_brear():
+    paths = get_project_paths()
+    pretrained_model_path = paths["models_dir"] / "animal_cnn_aug.pt"
+    new_data_dir = paths["raw_dir"] / "PandasBears"
+    tag = "pandasBears"
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    batch_size = 32
+
+    # Загружаем базовую модель
+    base_model = SimpleCNN()
+    base_model.load_state_dict(torch.load(pretrained_model_path, map_location=device))
+
+    # Замораживаем все параметры
+    for param in base_model.parameters():
+        param.requires_grad = False
+
+    # Заменяем классификатор (последний слой)
+    in_features = base_model.net[-4].out_features
+    base_model.net[-1] = nn.Linear(in_features, 1)  # Новый классификатор
+    for param in base_model.net[-1].parameters():
+        param.requires_grad = True  # Только он обучаемый
+
+    base_model = base_model.to(device)
+
+    criterion = nn.BCEWithLogitsLoss()
+    optimizer = optim.AdamW(base_model.net[-1].parameters(), lr=1e-3, weight_decay=1e-4)
+
+    with mlflow.start_run(run_name=f"transferLearning_{tag}"):
+        train_loader, test_loader, classes = get_data_loaders(new_data_dir, batch_size=batch_size, augment=True)
+
+        mlflow.log_param("transfer_from", str(pretrained_model_path))
+        mlflow.log_param("new_dataset", str(new_data_dir))
+        mlflow.log_param("freeze_base", True)
+        mlflow.log_param("batch_size", batch_size)
+
+        train_losses, val_losses = train_image_model(
+            base_model,
+            train_loader.dataset,
+            criterion,
+            optimizer,
+            device,
+            model_name_tag=f"transfer_{tag}",
+        )
+
+        model_path = paths["models_dir"] / f"animal_cnn_transfer_pandasBears.pt"
+        torch.save(base_model.state_dict(), model_path)
+        mlflow.log_artifact(str(model_path))
+
+        all_preds, all_labels = predict_image(base_model, test_loader, device)
+        log_confusion_matrix(all_preds, all_labels, f"transfer_model_{tag}")
+
+        acc = (all_preds.flatten() == all_labels).mean()
+        mlflow.log_metric("accuracy", acc)
+
+        plot_losses(train_losses, val_losses, f"transfer_{tag}")
+
+        preds_path = paths["vectors_dir"] / f"animal_preds_cnn_transfer_{tag}.npy"
+        labels_path = paths["vectors_dir"] / f"animal_labels_cnn_transfer_{tag}.npy"
+        np.save(preds_path, all_preds)
+        np.save(labels_path, all_labels)
+
+
+
+
+@task('data:run_transfer_learning_horse')
+def run_transfer_learning_horse():
+    paths = get_project_paths()
+    pretrained_model_path = paths["models_dir"] / "animal_cnn_aug.pt"
+    new_data_dir = paths["raw_dir"] / "horsehuman"
+    tag = "horsehuman"
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    batch_size = 32
+
+    # Загружаем базовую модель
+    base_model = SimpleCNN()
+    base_model.load_state_dict(torch.load(pretrained_model_path, map_location=device))
+
+    # Замораживаем все параметры
+    for param in base_model.parameters():
+        param.requires_grad = False
+
+    # Заменяем классификатор (последний слой)
+    in_features = base_model.net[-4].out_features
+    base_model.net[-1] = nn.Linear(in_features, 1)  # Новый классификатор
+    for param in base_model.net[-1].parameters():
+        param.requires_grad = True  # Только он обучаемый
+
+    base_model = base_model.to(device)
+
+    criterion = nn.BCEWithLogitsLoss()
+    optimizer = optim.AdamW(base_model.net[-1].parameters(), lr=1e-3, weight_decay=1e-4)
+
+    with mlflow.start_run(run_name=f"transferLearning_{tag}"):
+        train_loader, test_loader, classes = get_data_loaders(new_data_dir, batch_size=batch_size, augment=True)
+
+        mlflow.log_param("transfer_from", str(pretrained_model_path))
+        mlflow.log_param("new_dataset", str(new_data_dir))
+        mlflow.log_param("freeze_base", True)
+        mlflow.log_param("batch_size", batch_size)
+
+        train_losses, val_losses = train_image_model(
+            base_model,
+            train_loader.dataset,
+            criterion,
+            optimizer,
+            device,
+            model_name_tag=f"transfer_{tag}",
+        )
+
+        model_path = paths["models_dir"] / f"animal_cnn_transfer_horsehuman.pt"
+        torch.save(base_model.state_dict(), model_path)
+        mlflow.log_artifact(str(model_path))
+
+        all_preds, all_labels = predict_image(base_model, test_loader, device)
+        log_confusion_matrix(all_preds, all_labels, f"transfer_model_{tag}")
+
+        acc = (all_preds.flatten() == all_labels).mean()
+        mlflow.log_metric("accuracy", acc)
+
+        plot_losses(train_losses, val_losses, f"transfer_{tag}")
+
+        preds_path = paths["vectors_dir"] / f"animal_preds_cnn_transfer_{tag}.npy"
+        labels_path = paths["vectors_dir"] / f"animal_labels_cnn_transfer_{tag}.npy"
+        np.save(preds_path, all_preds)
+        np.save(labels_path, all_labels)
+
+
+
+@task('data:run_optuna_study_aug')
+def run_optuna_study_aug():
+    n_trials = 60
+    study = optuna.create_study(direction="maximize")
+    study.optimize(objective_cnn, n_trials=n_trials)
+
+    print("Best trial:")
+    print(study.best_trial)
+
+    # Сохраняем лучшую модель
+    best_trial_tag = f"optuna_aug_trial_{study.best_trial.number}"
+    best_model_path = paths["models_dir"] / f"{best_trial_tag}_final_model.pt"
+    final_model_path = paths["models_dir"] / "best_augmented_model.pt"
+    if best_model_path.exists():
+        os.rename(best_model_path, final_model_path)
+
+
+
+
+
 
 
 

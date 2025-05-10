@@ -179,3 +179,4 @@ cython_debug/
 /notebooks/.ipynb_checkpoints
 /.ipynb_checkpoints
 /scripts/mlruns
+mlartifacts/

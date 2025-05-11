@@ -16,11 +16,13 @@ import torch.nn.init as init
 import numpy as np
 import pandas as pd
 import yaml
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 from torch import nn, optim
 
 from auxiliary_functions import get_project_paths, plot_losses, log_confusion_matrix
 from train_nn import SimpleNN, nn_train, nn_train_class, train_image_model, predict_image, SimpleMLP, get_data_loaders, \
-    SimpleCNN, objective_cnn
+    SimpleCNN, objective_cnn, nn_train_best_gp, nn_train_classification_best_gp
 from task_registry import task, main
 mlflow.set_tracking_uri('http://localhost:5000')
 
@@ -765,7 +767,7 @@ def run_transfer_learning_horse():
 
 @task('data:run_optuna_study_aug')
 def run_optuna_study_aug():
-    n_trials = 60
+    n_trials = 90
     study = optuna.create_study(direction="maximize")
     study.optimize(objective_cnn, n_trials=n_trials)
 
@@ -781,10 +783,66 @@ def run_optuna_study_aug():
 
 
 
+@task('data:run_test_gp')
+def run_test_gp():
+    # Загрузка данных
+    df = pd.read_csv(paths['raw_dir'] / "StudentPerformanceFactors.csv")
+
+    # Вычисление целевой переменной
+    df['target'] = df['Exam_Score'] - df['Previous_Scores']
+
+    # Выбираем признаки для обучения
+    features = df.drop(columns=['Exam_Score', 'Previous_Scores', 'target'])
+
+    # Разделяем на тренировочные и тестовые данные
+    X = features.values
+    y = df['target'].values
+
+    model_name_tag = 'regress_best_gp_test'
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Выбираем устройство
+
+    best_model_state, val_loss, val_preds = nn_train_best_gp(
+        X=X,
+        y=y,
+        model_name_tag=model_name_tag,
+        device=device  # Передаем устройство
+    )
+
+    vals_path = paths["vectors_dir"] / f"val_loss_{model_name_tag}.npy"
+    preds_path = paths["vectors_dir"] / f"aval_preds_{model_name_tag}.npy"
+    np.save(vals_path, val_loss)
+    np.save(preds_path, val_preds)
 
 
 
+@task('data:run_test_gp_class')
+def run_test_gp_class():
+    # Загрузка данных
+    df = pd.read_csv(paths['raw_dir'] / "Student_performance_data.csv")
 
+    # Выбираем признаки для обучения
+    features = df.drop(columns=['GradeClass'])
+
+    # Разделяем на тренировочные и тестовые данные
+    X = features.values
+    y = df['GradeClass'].values
+
+    model_name_tag = 'class_best_gp_test'
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Выбираем устройство
+
+    best_model_state, val_loss, val_preds = nn_train_classification_best_gp(
+        X=X,
+        y=y,
+        model_name_tag=model_name_tag,
+        device=device  # Передаем устройство
+    )
+
+    vals_path = paths["vectors_dir"] / f"val_loss_{model_name_tag}.npy"
+    preds_path = paths["vectors_dir"] / f"aval_preds_{model_name_tag}.npy"
+    np.save(vals_path, val_loss)
+    np.save(preds_path, val_preds)
 
 
 

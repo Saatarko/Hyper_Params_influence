@@ -184,3 +184,19 @@ stages:
       hash: md5
       md5: 3a11b9aa8189fe92e8745617711589c9
       size: 8471439
+  run_optuna_study_aug_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_optuna_study_aug
+    deps:
+    - path: scripts/data_processing.py
+      hash: md5
+      md5: d14ac83c0e95e3a5084ce68c020fa196
+      size: 32115
+    - path: scripts/train_nn.py
+      hash: md5
+      md5: cb851233478edd62b7161eb98110819a
+      size: 37268
+    outs:
+    - path: outdata/models/best_augmented_model.pt
+      hash: md5
+      md5: 9ef747a340dcb8d7a5fc0e49e60c9369
+      size: 8471453

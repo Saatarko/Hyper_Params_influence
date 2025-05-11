@@ -602,6 +602,15 @@ def define_augmentations(trial):
     use_color_jitter = trial.suggest_categorical("color_jitter", [True, False])
     erasing_p = trial.suggest_float("random_erasing_p", 0.0, 0.4)
 
+    aug_params = {
+        "rotation": rotation,
+        "translate": translate,
+        "scale_min": scale_min,
+        "scale_max": scale_max,
+        "color_jitter": use_color_jitter,
+        "random_erasing_p": erasing_p
+    }
+
     transform_list = [
         transforms.RandomResizedCrop(64, scale=(scale_min, scale_max)),
         transforms.RandomHorizontalFlip(),
@@ -620,7 +629,7 @@ def define_augmentations(trial):
     if erasing_p > 0.0:
         transform_list.append(transforms.RandomErasing(p=erasing_p, scale=(0.02, 0.1), ratio=(0.3, 3.3), value=0))
 
-    return transforms.Compose(transform_list)
+    return transforms.Compose(transform_list), aug_params
 
 
 def objective_cnn(trial):
@@ -628,11 +637,19 @@ def objective_cnn(trial):
     paths = get_project_paths()
     data_dir = paths["raw_dir"] / "horsehuman"
     batch_size = 32
-    num_epochs = 30
+    num_epochs = 50
 
     with mlflow.start_run(nested=True):
         tag = f"optuna_aug_trial_{trial.number}"
-        aug_transform = define_augmentations(trial)
+        aug_transform, aug_params = define_augmentations(trial)
+
+        # Логируем параметры в MLflow
+        mlflow.log_params(aug_params)
+
+        # Сохраняем параметры в JSON
+        params_save_path = paths["models_dir"] / f"optuna_aug_trial_{trial.number}_params.json"
+        with open(params_save_path, "w") as f:
+            json.dump(aug_params, f, indent=4)
 
         train_loader, test_loader, _ = get_data_loaders(data_dir, batch_size=batch_size, augment=False)
         train_loader.dataset.transform = aug_transform  # вручную заменяем transform
@@ -661,21 +678,321 @@ def objective_cnn(trial):
         return acc  # целевая метрика
 
 
+# Модель нейронной сети
+class RegressionNN(nn.Module):
+    def __init__(self, input_size, hidden_size, activation_fn, dropout):
+        super(RegressionNN, self).__init__()
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, 1)
+        self.dropout = nn.Dropout(dropout)
+        self.activation = activation_fn  # swish или другие активации
+
+    def forward(self, x):
+        x = self.activation(self.fc1(x))
+        x = self.dropout(x)
+        x = self.fc2(x)
+        return x
 
 
+def nn_train_best_gp(X, y, model_name_tag, num_epochs=100, batch_size=64, seed=42, device=None):
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    with open(PROJECT_ROOT / "params.yaml") as f:
+        paths = get_project_paths()
+
+    # Разделение на train/val/test
+    X_temp, X_test, y_temp, y_test = train_test_split(X, y, test_size=0.3, random_state=seed)
+    X_train, X_val, y_train, y_val = train_test_split(X_temp, y_temp, test_size=0.3, random_state=seed)
+
+    # Нормализация
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_val_scaled = scaler.transform(X_val)
+    X_test_scaled = scaler.transform(X_test)
+
+    joblib.dump(scaler, paths["processed_dir"]/'scaler.pkl')
+
+    np.save(paths["vectors_dir"]/'X_train_scaled.npy', X_train_scaled)
+    np.save(paths["vectors_dir"]/'X_val_scaled.npy', X_val_scaled)
+    np.save(paths["vectors_dir"]/'X_test_scaled.npy', X_test_scaled)
+
+    # Тензоры
+    X_train_tensor = torch.tensor(X_train_scaled, dtype=torch.float32).to(device)
+    X_val_tensor = torch.tensor(X_val_scaled, dtype=torch.float32).to(device)
+    X_test_tensor = torch.tensor(X_test_scaled, dtype=torch.float32).to(device)
 
 
+    y_train_tensor = torch.tensor(y_train, dtype=torch.float32).unsqueeze(1).to(device)
+    y_val_tensor = torch.tensor(y_val, dtype=torch.float32).unsqueeze(1).to(device)
+    y_test_tensor = torch.tensor(y_test, dtype=torch.float32).unsqueeze(1).to(device)
+
+    # Датасеты и загрузчики
+    train_loader = DataLoader(NNDataset(X_train_tensor, y_train_tensor), batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(NNDataset(X_val_tensor, y_val_tensor), batch_size=batch_size, shuffle=False)
+
+    # Гиперпараметры и модель
+    activation_fn = nn.SiLU()
+    dropout = 0.0
+    loss_fn = nn.MSELoss()
+    hidden_size = 32
+
+    input_size = X_train.shape[1]
+    model = RegressionNN(input_size, hidden_size, activation_fn, dropout).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+
+    best_val_loss = float("inf")
+    best_model_state = None
+    epoch_train_losses = []
+    epoch_val_losses = []
+
+    model_path = paths["models_dir"] / f"{model_name_tag}_final_model.pt"
+    metrics_path = paths["models_dir"] / f"{model_name_tag}_train_metrics.json"
+
+    with mlflow.start_run(nested=True):
+        mlflow.log_param("model_name_tag", model_name_tag)
+        mlflow.log_param("num_epochs", num_epochs)
+        mlflow.log_param("batch_size", batch_size)
+        mlflow.log_param("seed", seed)
+
+        for epoch in range(num_epochs):
+            model.train()
+            train_loss = 0
+            for X_batch, y_batch in train_loader:
+                X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+                output = model(X_batch)
+                loss = loss_fn(output, y_batch)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                train_loss += loss.item()
+
+            model.eval()
+            val_loss = 0
+            with torch.no_grad():
+                for X_batch, y_batch in val_loader:
+                    output = model(X_batch)
+                    loss = loss_fn(output, y_batch)
+                    val_loss += loss.item()
+
+            avg_train = train_loss / len(train_loader)
+            avg_val = val_loss / len(val_loader)
+
+            epoch_train_losses.append(avg_train)
+            epoch_val_losses.append(avg_val)
+
+            mlflow.log_metric("train_loss", avg_train, step=epoch)
+            mlflow.log_metric("val_loss", avg_val, step=epoch)
+
+            if avg_val < best_val_loss:
+                best_val_loss = avg_val
+                best_model_state = model.state_dict()
+
+            print(f"Epoch [{epoch+1}/{num_epochs}] Train Loss: {avg_train:.4f} | Val Loss: {avg_val:.4f}")
+
+        # Сохранение модели и метрик
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        torch.save(best_model_state, model_path)
+        mlflow.pytorch.log_model(model, model_name_tag)
+
+        train_metrics = {
+            "best_val_loss": best_val_loss,
+            "final_train_loss": epoch_train_losses[-1],
+            "final_val_loss": epoch_val_losses[-1],
+            "num_epochs": num_epochs
+        }
+        os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
+        with open(metrics_path, "w") as f:
+            json.dump(train_metrics, f, indent=4)
+
+        # Оценка на тестовой выборке
+        model.eval()
+        with torch.no_grad():
+            test_preds = model(X_test_tensor).squeeze()
+            test_loss = nn.MSELoss()(test_preds, y_test_tensor.squeeze()).item()
+            mlflow.log_metric("test_loss", test_loss)
+
+            # График: True vs Predicted
+            plt.figure(figsize=(8, 6))
+            plt.scatter(y_test_tensor.cpu(), test_preds.cpu(), alpha=0.6)
+            plt.plot([y_test_tensor.min(), y_test_tensor.max()],
+                     [y_test_tensor.min(), y_test_tensor.max()],
+                     color='red', linestyle='--')
+            plt.xlabel("True Values")
+            plt.ylabel("Predicted Values")
+            plt.title("True vs Predicted on Test Set")
+            plot_path = paths["reports_dir"] / f"{model_name_tag}_test_predictions.png"
+            os.makedirs(plot_path.parent, exist_ok=True)
+            plt.savefig(plot_path)
+            plt.close()
+            mlflow.log_artifact(str(plot_path))
+
+    return best_model_state, best_val_loss, test_loss
 
 
+class ClassificationNN(nn.Module):
+    def __init__(self, input_size, hidden_size, activation_fn, dropout=0.0, init_type='xavier'):
+        super(ClassificationNN, self).__init__()
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.activation = activation_fn
+        self.dropout = nn.Dropout(dropout)
+        self.fc2 = nn.Linear(hidden_size, 1)
+        self.output_activation = nn.Sigmoid()  # Для бинарной классификации
 
+        self._initialize_weights(init_type)
 
+    def _initialize_weights(self, init_type):
+        if init_type == 'xavier':
+            nn.init.xavier_uniform_(self.fc1.weight)
+            nn.init.zeros_(self.fc1.bias)
+            nn.init.xavier_uniform_(self.fc2.weight)
+            nn.init.zeros_(self.fc2.bias)
+        elif init_type == 'he':
+            nn.init.kaiming_uniform_(self.fc1.weight, nonlinearity='relu')
+            nn.init.zeros_(self.fc1.bias)
+            nn.init.kaiming_uniform_(self.fc2.weight, nonlinearity='relu')
+            nn.init.zeros_(self.fc2.bias)
+        else:
+            raise ValueError(f"Unknown init_type: {init_type}")
 
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.activation(x)
+        x = self.dropout(x)
+        x = self.fc2(x)
+        x = self.output_activation(x)
+        return x
 
+def nn_train_classification_best_gp(X, y, model_name_tag, num_epochs=100, batch_size=64, seed=42, device=None):
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    with open(PROJECT_ROOT / "params.yaml") as f:
+        paths = get_project_paths()
 
+    # Разделение на train/val/test
+    X_temp, X_test, y_temp, y_test = train_test_split(X, y, test_size=0.3, random_state=seed)
+    X_train, X_val, y_train, y_val = train_test_split(X_temp, y_temp, test_size=0.3, random_state=seed)
 
+    # Нормализация
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_val_scaled = scaler.transform(X_val)
+    X_test_scaled = scaler.transform(X_test)
 
+    joblib.dump(scaler, paths["processed_dir"] / 'scaler.pkl')
 
+    # Сохранение векторов
+    np.save(paths["vectors_dir"] / 'X_train_scaled.npy', X_train_scaled)
+    np.save(paths["vectors_dir"] / 'X_val_scaled.npy', X_val_scaled)
+    np.save(paths["vectors_dir"] / 'X_test_scaled.npy', X_test_scaled)
 
+    # Тензоры
+    X_train_tensor = torch.tensor(X_train_scaled, dtype=torch.float32).to(device)
+    y_train_tensor = torch.tensor(y_train.values, dtype=torch.float32).unsqueeze(1).to(device)
+
+    X_val_tensor = torch.tensor(X_val_scaled, dtype=torch.float32).to(device)
+    y_val_tensor = torch.tensor(y_val.values, dtype=torch.float32).unsqueeze(1).to(device)
+
+    # Датасеты и загрузчики
+    train_loader = DataLoader(NNDataset(X_train_tensor, y_train_tensor), batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(NNDataset(X_val_tensor, y_val_tensor), batch_size=batch_size, shuffle=False)
+
+    # Модель
+    input_size = X_train.shape[1]
+    model = ClassificationNN(
+        input_size=input_size,
+        hidden_size=32,
+        activation_fn=nn.Tanh(),
+        dropout=0.2,
+        init_type="xavier"
+    ).to(device)
+
+    loss_fn = nn.BCELoss()
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+
+    epoch_train_losses = []
+    epoch_val_losses = []
+    best_val_loss = float("inf")
+    best_model_state = None
+
+    model_path = paths["models_dir"] / f"{model_name_tag}_final_model.pt"
+    metrics_path = paths["models_dir"] / f"{model_name_tag}_train_metrics.json"
+
+    with mlflow.start_run(nested=True):
+        mlflow.log_params({
+            "model_name_tag": model_name_tag,
+            "num_epochs": num_epochs,
+            "batch_size": batch_size,
+            "seed": seed,
+            "activation": "tanh",
+            "dropout": 0.2,
+            "initializer": "xavier",
+            "loss_fn": "BCE",
+            "hidden_size": 32
+        })
+
+        for epoch in range(num_epochs):
+            model.train()
+            train_loss = 0
+            for X_batch, y_batch in train_loader:
+                optimizer.zero_grad()
+                output = model(X_batch)
+                loss = loss_fn(output, y_batch)
+                loss.backward()
+                optimizer.step()
+                train_loss += loss.item()
+
+            # Валидация
+            model.eval()
+            val_loss = 0
+            with torch.no_grad():
+                for X_batch, y_batch in val_loader:
+                    output = model(X_batch)
+                    loss = loss_fn(output, y_batch)
+                    val_loss += loss.item()
+
+            avg_train = train_loss / len(train_loader)
+            avg_val = val_loss / len(val_loader)
+
+            epoch_train_losses.append(avg_train)
+            epoch_val_losses.append(avg_val)
+
+            mlflow.log_metric("train_loss", avg_train, step=epoch)
+            mlflow.log_metric("val_loss", avg_val, step=epoch)
+
+            if avg_val < best_val_loss:
+                best_val_loss = avg_val
+                best_model_state = model.state_dict()
+
+            print(f"Epoch [{epoch+1}/{num_epochs}] Train Loss: {avg_train:.4f} | Val Loss: {avg_val:.4f}")
+
+        # Сохраняем модель
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        torch.save(best_model_state, model_path)
+        mlflow.pytorch.log_model(model, model_name_tag)
+
+        # Метрики
+        train_metrics = {
+            "best_val_loss": best_val_loss,
+            "final_train_loss": epoch_train_losses[-1],
+            "final_val_loss": epoch_val_losses[-1],
+            "num_epochs": num_epochs
+        }
+        os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
+        with open(metrics_path, "w") as f:
+            json.dump(train_metrics, f, indent=4)
+
+        # Графики
+        loss_plot_path = plot_losses(epoch_train_losses, epoch_val_losses, f"{model_name_tag}_loss")
+        mlflow.log_artifact(loss_plot_path)
+
+        # Матрица ошибок
+        model.eval()
+        with torch.no_grad():
+            val_preds = model(X_val_tensor).squeeze().cpu().numpy()
+            val_preds_class = (val_preds >= 0.5).astype(int)
+            val_true = y_val_tensor.squeeze().cpu().numpy()
+            confmat_path = log_confusion_matrix(val_preds_class, val_true, f"{model_name_tag}_confmat")
+            mlflow.log_artifact(confmat_path)
+
+    return best_model_state, best_val_loss, val_preds_class
 
 
 

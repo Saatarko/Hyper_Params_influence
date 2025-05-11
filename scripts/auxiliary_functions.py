@@ -2,6 +2,8 @@ import json
 import os
 from collections import defaultdict
 from pathlib import Path
+
+import pandas as pd
 import seaborn as sns
 import mlflow
 import numpy as np
@@ -157,3 +159,141 @@ def log_confusion_matrix(all_preds, all_labels, model_name_tag):
     plt.savefig(plot_path)
     mlflow.log_artifact(plot_path)  # Логирование матрицы ошибок
     plt.close()
+
+
+def plot_matrix():
+    # Пути
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    paths = get_project_paths()
+    image_dir = paths["image_dir"]
+
+    # Загрузка таблицы метрик
+    metrics_df = pd.read_csv(paths['raw_dir']/"runs_aug.csv")
+
+    # Сбор изображений
+    all_images = list(image_dir.glob("*.png"))
+    images = [img for img in all_images if "optuna_confmat" in img.name]
+
+    # Сортируем по номеру эксперимента (из имени)
+    def extract_trial_number(path):
+        # Например: "optuna_confmat_59_confusion_matrix.png" → 59
+        try:
+            return int(path.name.split("_")[2])
+        except (IndexError, ValueError):
+            return -1
+
+    images = sorted(images, key=extract_trial_number)
+
+    n = len(images)
+    rows = (n + 2) // 3  # по 3 в строку
+    fig, axes = plt.subplots(rows, 3, figsize=(18, 5 * rows))
+    axes = axes.flatten() if n > 1 else [axes]
+
+    for ax in axes[n:]:
+        ax.axis('off')
+
+    for ax, img_path in zip(axes, images):
+        trial_num = extract_trial_number(img_path)
+
+        # Извлекаем строку с метриками
+        row = metrics_df[metrics_df["model_name_tag"] == f"optuna_aug_trial_{trial_num}"]
+        if not row.empty:
+            row_data = row.iloc[0]
+            info = (
+                f"Эксперимент {trial_num}\n"
+                f"Accuracy: {row_data['accuracy']:.3f}\n"
+                f"Train Loss: {row_data['train_loss']:.4f}\n"
+                f"Val Loss: {row_data['val_loss']:.4f}"
+            )
+        else:
+            info = f"Эксперимент {trial_num}\n(данные не найдены)"
+
+        img = plt.imread(img_path)
+        ax.imshow(img)
+        ax.axis("off")
+        ax.set_title(img_path.name, fontsize=10)
+        ax.text(0.5, -0.2, info, ha="center", va="top", fontsize=9, transform=ax.transAxes)
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_grouped_by_param(param_name: str, bins: int = 3):
+    # Пути
+    paths = get_project_paths()
+    image_dir = paths["image_dir"]
+    models_dir = paths["models_dir"]
+    metrics_df = pd.read_csv(paths['raw_dir'] / "runs_aug.csv")
+
+    # Загружаем параметры всех экспериментов
+    param_files = list(models_dir.glob("optuna_aug_trial_*_params.json"))
+    experiment_data = []
+
+    for param_file in param_files:
+        try:
+            trial_num = int(param_file.name.split("_")[3])
+            with open(param_file) as f:
+                aug_params = json.load(f)
+            aug_params["trial_num"] = trial_num
+            experiment_data.append(aug_params)
+        except Exception:
+            continue
+
+    # Группировка по указанному параметру
+    values = [exp[param_name] for exp in experiment_data]
+    if isinstance(values[0], bool):
+        groups = defaultdict(list)
+        for exp in experiment_data:
+            groups[str(exp[param_name])].append(exp)
+    else:
+        # binarизуем значения
+        min_val, max_val = min(values), max(values)
+        step = (max_val - min_val) / bins
+        groups = defaultdict(list)
+        for exp in experiment_data:
+            val = exp[param_name]
+            bin_index = int((val - min_val) / step)
+            bin_index = min(bin_index, bins - 1)
+            key = f"{min_val + bin_index * step:.2f}–{min_val + (bin_index + 1) * step:.2f}"
+            groups[key].append(exp)
+
+    # Рисуем
+    for group_key, group_experiments in groups.items():
+        n = len(group_experiments)
+        rows = (n + 2) // 3
+        fig, axes = plt.subplots(rows, 3, figsize=(18, 5 * rows))
+        axes = axes.flatten() if n > 1 else [axes]
+
+        for ax in axes[n:]:
+            ax.axis("off")
+
+        for ax, exp in zip(axes, group_experiments):
+            trial_num = exp["trial_num"]
+            img_path = image_dir / f"optuna_confmat_{trial_num}_confusion_matrix.png"
+            if not img_path.exists():
+                continue
+
+            img = plt.imread(img_path)
+            ax.imshow(img)
+            ax.axis("off")
+
+            # Получаем метрики
+            row = metrics_df[metrics_df["model_name_tag"] == f"optuna_aug_trial_{trial_num}"]
+            if not row.empty:
+                row_data = row.iloc[0]
+                info = (
+                    f"Trial {trial_num}\n"
+                    f"Accuracy: {row_data['accuracy']:.3f}\n"
+                    f"Train Loss: {row_data['train_loss']:.4f}\n"
+                    f"Val Loss: {row_data['val_loss']:.4f}\n"
+                    f"{param_name}: {exp[param_name]}"
+                )
+            else:
+                info = f"Trial {trial_num}\n(данные не найдены)"
+
+            ax.set_title(f"Trial {trial_num}", fontsize=10)
+            ax.text(0.5, -0.2, info, ha="center", va="top", fontsize=9, transform=ax.transAxes)
+
+        fig.suptitle(f"Группировка по параметру '{param_name}' — значение {group_key}", fontsize=16)
+        plt.tight_layout()
+        plt.show()

@@ -94,3 +94,19 @@ stages:
       - scripts/data_processing.py
     outs:
       - outdata/models/best_augmented_model.pt
+
+  run_test_gp_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_test_gp
+    deps:
+      - scripts/train_nn.py
+      - scripts/data_processing.py
+    outs:
+      - outdata/vectors/val_loss_regress_best_gp_test.npy
+
+  run_test_gp_class_stage:
+    cmd: python scripts/data_processing.py --tasks data:run_test_gp_class
+    deps:
+      - scripts/train_nn.py
+      - scripts/data_processing.py
+    outs:
+      - outdata/vectors/val_loss_class_best_gp_test.npy
